@@ -13,7 +13,6 @@ Configure via env:
 from __future__ import annotations
 
 import os
-from typing import Iterable
 
 # Tools that *write* or *transmit* — require operator approval each call.
 CONFIRM_TOOLS: frozenset[str] = frozenset(

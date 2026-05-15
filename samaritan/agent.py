@@ -74,25 +74,41 @@ class Samaritan:
         self.system = current_prompt()
 
     def turn(self, user_input: str) -> None:
-        """Process one user turn end-to-end."""
+        """Process one user turn end-to-end.
+
+        Maintains a per-turn checkpoint so any failure path — API error,
+        Ctrl+C, exception — rolls the conversation back to a valid
+        boundary. The session is persisted at the end of every turn so
+        the disk state and in-memory state never diverge.
+        """
+        checkpoint = len(self.messages)
         self.messages.append({"role": "user", "content": user_input})
 
         try:
-            self._loop()
+            self._loop(checkpoint)
+        except KeyboardInterrupt:
+            # Mid-turn abort — roll back so the conversation can't end
+            # with an unresolved tool_use block.
+            del self.messages[checkpoint:]
+            ui.render_system_message("Turn interrupted.", level="warn")
+        except Exception as exc:  # noqa: BLE001 — last-resort guard
+            del self.messages[checkpoint:]
+            ui.render_system_message(
+                f"Unhandled error: {type(exc).__name__}: {exc}", level="error"
+            )
         finally:
-            # Always persist — even on abort/error — so the conversation
-            # state on disk matches what's in memory.
             self.session.save()
 
     # ─── Internals ──────────────────────────────────────────────────────────
 
-    def _loop(self) -> None:
+    def _loop(self, checkpoint: int) -> None:
         for round_idx in range(self.MAX_TOOL_ROUNDS):
             response = self._stream_one_response()
             if response is None:
-                # API failure — rollback the user turn so retry is clean.
-                if self.messages and self.messages[-1]["role"] == "user":
-                    self.messages.pop()
+                # API failure — roll back the entire turn so the
+                # conversation can't end mid-tool-round (which would
+                # leave orphan tool_use blocks and 400 the next call).
+                del self.messages[checkpoint:]
                 return
 
             self.session.usage.add(response.usage)
@@ -113,8 +129,16 @@ class Samaritan:
                 continue
             if stop == "tool_use":
                 tool_results = self._execute_tool_uses(response)
-                if tool_results:
-                    self.messages.append({"role": "user", "content": tool_results})
+                if not tool_results:
+                    # Model signaled tool_use but emitted no tool_use blocks.
+                    # Re-prompting would just burn a round; bail.
+                    ui.render_system_message(
+                        "Model requested tools but emitted none. Standing down.",
+                        level="warn",
+                    )
+                    ui.render_cost_line(self.session.usage)
+                    return
+                self.messages.append({"role": "user", "content": tool_results})
                 continue
             if stop == "max_tokens":
                 ui.render_system_message(

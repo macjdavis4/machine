@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 import shutil
 import sqlite3
-import subprocess
 from pathlib import Path
 
 import anthropic
@@ -32,7 +31,8 @@ def _check_api_reachable() -> tuple[str, str, str]:
     except anthropic.AuthenticationError:
         return ("anthropic api", "fail", "authentication rejected")
     except anthropic.APIConnectionError as exc:
-        return ("anthropic api", "fail", f"no connection: {exc}")
+        # Transient — let the operator start and surface real errors per turn.
+        return ("anthropic api", "warn", f"no connection: {exc}")
     except anthropic.APIStatusError as exc:
         return ("anthropic api", "warn", f"status {exc.status_code}")
     except Exception as exc:  # noqa: BLE001

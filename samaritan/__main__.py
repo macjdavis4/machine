@@ -71,12 +71,16 @@ def _handle_load(arg: str, agent: Samaritan) -> Samaritan:
     # Persist current session before swapping
     agent.session.save()
     new_agent = Samaritan(session=loaded)
+    mode_changed = False
     if loaded.mode and loaded.mode != mode.current():
         try:
             mode.set_mode(loaded.mode)
+            mode_changed = True
         except ValueError:
             pass
     new_agent.refresh_system()
+    if mode_changed:
+        ui.classification_banner()
     ui.render_system_message(
         f"Loaded session {loaded.id} ({len(loaded.messages)} msgs, mode={loaded.mode})."
     )
@@ -180,14 +184,9 @@ def main() -> int:
             _handle_mode(line[len("/mode"):].strip(), agent)
             continue
 
-        try:
-            agent.turn(line)
-        except KeyboardInterrupt:
-            ui.render_system_message("Turn interrupted.", level="warn")
-            if agent.messages and agent.messages[-1]["role"] == "user":
-                agent.messages.pop()
-            agent.session.save()
-            continue
+        # agent.turn() handles its own checkpoint/rollback for KeyboardInterrupt
+        # and unexpected errors, then persists. No further action needed here.
+        agent.turn(line)
 
 
 if __name__ == "__main__":
