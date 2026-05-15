@@ -39,6 +39,10 @@ class Samaritan:
         self.system = system_prompt()
         self.messages: list[dict[str, Any]] = []
 
+    def refresh_system(self) -> None:
+        """Re-resolve the system prompt — call after a mode switch."""
+        self.system = system_prompt()
+
     def turn(self, user_input: str) -> None:
         """Process one user turn end-to-end."""
         self.messages.append({"role": "user", "content": user_input})

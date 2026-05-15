@@ -1,9 +1,14 @@
-# SAMARITAN
+# SAMARITAN / JARVIS
 
-A Jarvis-class personal intelligence with Samaritan-class observational
-output. Speaks like Jarvis served Tony Stark; displays like the
-surveillance HUD from *Person of Interest*. Built on Claude Opus 4.7 with
-native macOS integrations.
+A personal intelligence with two faces. Switch at any time between:
+
+- **`jarvis`** — Stark-Industries holographic blue HUD, warm British
+  butler voice, anticipatory and dryly witty.
+- **`samaritan`** — Surveillance-grade cyan classification HUD, cold
+  observational voice, briefings rather than conversation.
+
+Same model, same tools, two completely different personalities and visual
+languages. Built on Claude Opus 4.7 with native macOS integrations.
 
 ## Capabilities
 
@@ -51,17 +56,28 @@ Environment variables (set in `.env` or your shell):
 | Var | Default | Purpose |
 |-----|---------|---------|
 | `ANTHROPIC_API_KEY` | — | Required. Your Anthropic API key. |
+| `SAMARITAN_MODE` | `samaritan` | Startup mode: `jarvis` or `samaritan`. |
 | `SAMARITAN_USER_NAME` | `Sir` | How the assistant addresses you. |
 | `SAMARITAN_VOICE` | `Daniel` | macOS `say` voice. Try `Karen`, `Moira`, `Oliver`. |
+
+The active mode is also persisted to `~/.samaritan/mode` whenever you
+switch with `/mode`, so the next run remembers your choice. The env var
+overrides the persisted file if both are set.
 
 ## REPL Commands
 
 | Command | Effect |
 |---------|--------|
 | `/help` | Show in-app help. |
+| `/mode` | Show the current mode. |
+| `/mode jarvis` | Switch to Jarvis voice + Stark-HUD visuals. |
+| `/mode samaritan` | Switch to Samaritan voice + surveillance HUD. |
 | `/clear` | Reset conversation history (keeps the system prompt). |
 | `/history` | How many messages are in the current session. |
 | `/quit`, `/exit` | Disengage. |
+
+Switching modes wipes the current conversation — the new voice starts
+fresh rather than mid-conversation as someone else.
 
 Anything else is sent to Samaritan.
 
@@ -82,10 +98,11 @@ so repeated turns within a session reuse the cached prefix.
 
 ```
 samaritan/
-├── __main__.py            REPL entry point
-├── agent.py               Agent loop (Anthropic tool runner)
-├── persona.py             System prompt (the Jarvis voice)
-├── ui.py                  Samaritan-style cyan HUD rendering
+├── __main__.py            REPL entry point + slash commands
+├── agent.py               Agent loop (manual messages.create() with tools)
+├── persona.py             Both system prompts (Jarvis + Samaritan)
+├── ui.py                  Both HUDs (Stark blue + surveillance cyan)
+├── mode.py                Runtime mode switch + persistence
 ├── memory.py              Persistent JSON memory store
 └── tools/
     ├── _hud.py            hud_tool decorator
