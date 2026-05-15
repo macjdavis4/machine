@@ -1,30 +1,25 @@
-"""Tool decorator and registry.
+"""Tool decorator that wires every tool through:
 
-`@hud_tool(schema)` wraps a function with:
-  1. UI logging (renders SUBROUTINE/RETURN lines to the Samaritan HUD).
-  2. A `.schema` attribute carrying the JSON schema for the model.
-  3. The function's `name` from `__name__` (overridable in the schema dict).
+  1. Disabled-tool check (denylist)
+  2. Operator confirmation gate (for destructive/outbound tools)
+  3. HUD call/result rendering
+  4. Output capping (bytes ceiling on the string returned to the model)
+  5. Audit log entry
 
-The agent collects all such tools, hands their schemas to the API, and dispatches
-tool_use blocks to the matching function via a name→callable map.
+The decorator factory takes a JSON Schema description; the wrapped function
+exposes its schema on `wrapper.schema` so the agent can pass it to the API.
 """
 
 from __future__ import annotations
 
 import functools
+import time
 from typing import Any, Callable
 
-from samaritan import ui
+from samaritan import audit, safety, ui
 
 
 def hud_tool(*, description: str, properties: dict, required: list[str] | None = None):
-    """Decorator factory that returns a configured @hud_tool decorator.
-
-    Args:
-        description: Tool description shown to the model.
-        properties: JSON Schema `properties` block for the tool's inputs.
-        required: List of required property names. Defaults to empty.
-    """
     required_list = list(required) if required else []
 
     def decorator(fn: Callable) -> Callable:
@@ -37,18 +32,57 @@ def hud_tool(*, description: str, properties: dict, required: list[str] | None =
                 "required": required_list,
             },
         }
+        name = fn.__name__
 
         @functools.wraps(fn)
         def wrapper(**kwargs):
-            ui.render_tool_call(fn.__name__, kwargs)
+            # 1. Denylist
+            if safety.is_disabled(name):
+                msg = safety.render_disabled_response(name)
+                ui.render_tool_call(name, kwargs)
+                ui.render_tool_result(name, msg, is_error=True)
+                audit.record(name, kwargs, msg, is_error=True)
+                return msg
+
+            # 2. Confirmation gate
+            if safety.needs_confirmation(name):
+                ui.render_tool_call(name, kwargs)
+                if not ui.confirm_action(name, kwargs):
+                    msg = safety.render_denied_response(name)
+                    ui.render_tool_result(name, msg, is_error=True)
+                    audit.record(name, kwargs, msg, is_error=True)
+                    return msg
+            else:
+                ui.render_tool_call(name, kwargs)
+
+            # 3. Execute, with timing for the audit log
+            started = time.monotonic()
             try:
                 result = fn(**kwargs)
+                is_error = False
             except Exception as exc:  # noqa: BLE001 — surfaced to the model
-                err = f"{type(exc).__name__}: {exc}"
-                ui.render_tool_result(fn.__name__, err, is_error=True)
-                return err
-            ui.render_tool_result(fn.__name__, result)
-            return result
+                result = f"{type(exc).__name__}: {exc}"
+                is_error = True
+
+            # 4. Cap the result string before it goes back to the model
+            capped, truncated = safety.cap_output(str(result))
+
+            # 5. Render and audit
+            ui.render_tool_result(name, capped, is_error=is_error)
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            audit.record(
+                name,
+                kwargs,
+                capped,
+                is_error=is_error,
+                elapsed_ms=elapsed_ms,
+            )
+            if truncated:
+                ui.render_system_message(
+                    f"  ↳ {name} output truncated to {safety.max_tool_output_bytes()} bytes",
+                    level="warn",
+                )
+            return capped
 
         wrapper.schema = schema  # type: ignore[attr-defined]
         return wrapper

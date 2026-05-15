@@ -1,4 +1,10 @@
-"""Persistent memory: a small JSON store the assistant can read and write."""
+"""Persistent memory: a small JSON store the assistant can read and write.
+
+Bounded by design — the model cannot grow this without limit:
+  - max 200 entries
+  - max 8 KB per value
+  - max 64 chars per key
+"""
 
 from __future__ import annotations
 
@@ -10,6 +16,10 @@ from typing import Any
 
 _DIR = Path(os.path.expanduser("~/.samaritan"))
 _STORE = _DIR / "memory.json"
+
+MAX_ENTRIES = 200
+MAX_VALUE_BYTES = 8 * 1024
+MAX_KEY_LEN = 64
 
 
 def _load() -> dict[str, Any]:
@@ -27,9 +37,21 @@ def _save(data: dict[str, Any]) -> None:
 
 
 def remember(key: str, value: str) -> str:
+    if not key:
+        return "Refusing: empty key."
+    if len(key) > MAX_KEY_LEN:
+        return f"Refusing: key longer than {MAX_KEY_LEN} characters."
+    if len(value.encode("utf-8")) > MAX_VALUE_BYTES:
+        return f"Refusing: value larger than {MAX_VALUE_BYTES} bytes."
     data = _load()
-    data["facts"][key] = value
-    data["log"].append({"t": time.time(), "op": "set", "key": key})
+    facts = data.setdefault("facts", {})
+    if key not in facts and len(facts) >= MAX_ENTRIES:
+        return (
+            f"Refusing: memory store at capacity ({MAX_ENTRIES} entries). "
+            "Forget something first."
+        )
+    facts[key] = value
+    data.setdefault("log", []).append({"t": time.time(), "op": "set", "key": key})
     _save(data)
     return f"Stored: {key} = {value}"
 
@@ -50,6 +72,6 @@ def forget(key: str) -> str:
     if key not in data.get("facts", {}):
         return f"No entry for '{key}'."
     del data["facts"][key]
-    data["log"].append({"t": time.time(), "op": "del", "key": key})
+    data.setdefault("log", []).append({"t": time.time(), "op": "del", "key": key})
     _save(data)
     return f"Removed: {key}"

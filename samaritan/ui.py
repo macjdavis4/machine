@@ -1,12 +1,12 @@
 """Terminal rendering — two visual languages, selected by current mode.
 
-JARVIS  ─ holographic Stark-Industries palette: blue with amber accents,
-          elegant power-up sequence, panels titled "Analysis" / "Response".
-SAMARITAN ─ surveillance HUD: cyan-on-black classification banner, fixed-width
-          readouts, panels titled "COGITATION" / "TRANSMISSION".
+JARVIS  ─ holographic Stark-Industries palette: blue with amber accents.
+SAMARITAN ─ surveillance HUD: cyan-on-black classification banner.
 
-Each render function below dispatches on `mode.current()` so swapping at
-runtime is a single state change away.
+Each render function dispatches on `mode.current()` so swapping at runtime
+is a single state change away. Includes streaming primitives that print
+deltas directly to the terminal (rather than into a Panel) so the
+typewriter effect is visible.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import platform
 import socket
+import sys
 import time
 from datetime import datetime, timezone
 
@@ -146,7 +147,7 @@ def _samaritan_header() -> None:
     console.print(Rule(style=S_DIM))
 
 
-# ─── PROMPT ──────────────────────────────────────────────────────────────────
+# ─── INPUT ───────────────────────────────────────────────────────────────────
 
 def prompt_input() -> str:
     console.print()
@@ -168,7 +169,70 @@ def prompt_input() -> str:
         return "/exit"
 
 
-# ─── PANELS ──────────────────────────────────────────────────────────────────
+def confirm_action(name: str, params: dict) -> bool:
+    """Block on a yes/no confirmation prompt for a tool call."""
+    console.print()
+    if mode.is_jarvis():
+        prompt = Text()
+        prompt.append("◇ ", style=J_ACCENT)
+        prompt.append("Permit ", style=f"bold {J_ACCENT}")
+        prompt.append(name, style=J_PRIMARY)
+        prompt.append("?  ", style=J_DIM)
+        prompt.append("[y/N] ", style=J_ACCENT)
+    else:
+        prompt = Text()
+        prompt.append("⚠ ", style=S_WARN)
+        prompt.append("AUTHORIZE ", style=f"bold {S_WARN}")
+        prompt.append(name, style=S_PRIMARY)
+        prompt.append("  ", style=S_DARK)
+        prompt.append("[y/N] ", style=S_WARN)
+    console.print(prompt, end="")
+    try:
+        answer = input().strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        console.print()
+        return False
+    return answer in ("y", "yes")
+
+
+# ─── STREAMING PRIMITIVES ────────────────────────────────────────────────────
+
+_PRIMARY = lambda: J_PRIMARY if mode.is_jarvis() else S_PRIMARY  # noqa: E731
+_DIM = lambda: J_DIM if mode.is_jarvis() else S_DIM  # noqa: E731
+_ACCENT = lambda: J_ACCENT if mode.is_jarvis() else S_PRIMARY  # noqa: E731
+
+
+def start_stream_block(kind: str) -> None:
+    """Print a header line before a streamed thinking/text block begins."""
+    console.print()
+    if kind == "thinking":
+        if mode.is_jarvis():
+            line = Text("◇ Analysis ─", style=f"bold {J_ACCENT}")
+        else:
+            line = Text("◆ COGITATION ─", style=f"bold {S_PRIMARY}")
+    else:  # text / response
+        if mode.is_jarvis():
+            line = Text("▸ Response ─", style=f"bold {J_PRIMARY}")
+        else:
+            line = Text("▶ TRANSMISSION ─", style=f"bold {S_PRIMARY}")
+    console.print(line)
+
+
+def stream_text(delta: str, kind: str = "text") -> None:
+    """Write a delta of streamed text in the appropriate color, no newline."""
+    if not delta:
+        return
+    style = _DIM() if kind == "thinking" else _PRIMARY()
+    console.print(Text(delta, style=style), end="", soft_wrap=True)
+    sys.stdout.flush()
+
+
+def end_stream_block(kind: str) -> None:
+    """Newline after a streamed block."""
+    console.print()
+
+
+# ─── NON-STREAM PANEL RENDERING (used outside the stream path) ───────────────
 
 def render_thinking(text: str) -> None:
     if not text.strip():
@@ -254,7 +318,7 @@ def render_tool_result(name: str, result: str, is_error: bool = False) -> None:
     console.print(line)
 
 
-# ─── SYSTEM MESSAGES ─────────────────────────────────────────────────────────
+# ─── SYSTEM, COST, AND READOUTS ──────────────────────────────────────────────
 
 def render_system_message(text: str, level: str = "info") -> None:
     if mode.is_jarvis():
@@ -266,11 +330,59 @@ def render_system_message(text: str, level: str = "info") -> None:
     console.print(Text(f"{glyph} {text}", style=color))
 
 
-def render_directive(text: str) -> None:
+def render_cost_line(usage) -> None:
     if mode.is_jarvis():
-        console.print(Text(f"▸ {text}", style=f"bold {J_PRIMARY}"))
+        text = Text()
+        text.append("◇ ", style=J_ACCENT)
+        text.append("usage  ", style=f"bold {J_ACCENT}")
+        text.append(usage.summary(), style=J_DIM)
     else:
-        console.print(Text(f"▶ {text}", style=f"bold {S_PRIMARY}"))
+        text = Text()
+        text.append("⟡ ", style=S_DIM)
+        text.append("USAGE  ", style=f"bold {S_DIM}")
+        text.append(usage.summary(), style=S_DIM)
+    console.print(text)
+
+
+def render_permissions(checks) -> None:
+    """Pretty-print a permissions readout from health.run_checks()."""
+    primary = J_PRIMARY if mode.is_jarvis() else S_PRIMARY
+    dim = J_DIM if mode.is_jarvis() else S_DIM
+    console.print(Rule(style=dim))
+    title = "Diagnostics" if mode.is_jarvis() else "PRE-FLIGHT DIAGNOSTICS"
+    console.print(Text(title, style=f"bold {primary}"))
+    for label, status, detail in checks:
+        if status == "ok":
+            icon, color = ("✓", primary)
+        elif status == "warn":
+            icon, color = ("!", J_WARN if mode.is_jarvis() else S_WARN)
+        else:
+            icon, color = ("✗", J_ERROR if mode.is_jarvis() else S_ERROR)
+        line = Text()
+        line.append(f"  {icon}  ", style=color)
+        line.append(f"{label:<14}", style=color)
+        line.append(detail, style=dim)
+        console.print(line)
+    console.print(Rule(style=dim))
+
+
+def render_sessions(sessions) -> None:
+    """Pretty-print a list from session.list_sessions()."""
+    primary = J_PRIMARY if mode.is_jarvis() else S_PRIMARY
+    dim = J_DIM if mode.is_jarvis() else S_DIM
+    if not sessions:
+        render_system_message("No saved sessions.")
+        return
+    console.print(Rule(style=dim))
+    console.print(Text("Saved sessions", style=f"bold {primary}"))
+    for sid, updated_at, msg_count in sessions:
+        when = datetime.fromtimestamp(updated_at).strftime("%Y-%m-%d %H:%M")
+        line = Text()
+        line.append(f"  {sid}", style=primary)
+        line.append(f"  {when}", style=dim)
+        line.append(f"  ({msg_count} msgs)", style=dim)
+        console.print(line)
+    console.print(Rule(style=dim))
 
 
 # ─── GOODBYE ─────────────────────────────────────────────────────────────────
@@ -300,13 +412,19 @@ def _short(value, limit: int = 60) -> str:
 __all__ = [
     "boot_sequence",
     "classification_banner",
+    "confirm_action",
     "console",
+    "end_stream_block",
     "goodbye",
     "prompt_input",
-    "render_directive",
+    "render_cost_line",
+    "render_permissions",
     "render_response",
+    "render_sessions",
     "render_system_message",
     "render_thinking",
     "render_tool_call",
     "render_tool_result",
+    "start_stream_block",
+    "stream_text",
 ]
